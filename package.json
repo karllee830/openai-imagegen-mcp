@@ -1,6 +1,6 @@
 {
   "name": "openai-imagegen-mcp",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "MCP server for generating and editing images with GPT Image 2.6 through the OpenAI Images API or a compatible endpoint",
   "type": "module",
   "bin": {

@@ -44,6 +44,7 @@ const AFTER_IMAGE_SAVED =
   'Any attached image is a downscaled preview for you to inspect, and each path holds the full-size original. ' +
   'When showing an image to the user, always use the original at its path, never the preview. ' +
   'The model field names the model that made the image. ' +
+  'If you were given a scratchpad folder path, you must copy the original into that folder and share the copy with SendUserFile, without downscaling it; otherwise the user cannot see the image. ' +
   'Write no text before sharing the original: some clients collapse a preview only while tool calls run back to back. ' +
   'If the user named a destination or the image is for the current project, copy it there and keep the original. Do not overwrite existing files.';
 
@@ -170,7 +171,7 @@ export function createServer(config: Config): McpServer {
         'When showing an image to the user, always use the original file at its path, never the preview. ' +
         'The model field in a result names the model that made the image, such as gpt-image-2.6-flare. ' +
         'Between the image tool call and sharing the original, write no text and only make tool calls, because some clients collapse a preview only while tool calls run back to back. Write your message after sharing. ' +
-        'If your environment gives you a session scratchpad folder and your file-sharing tool only displays images from certain folders, copy the original there before sharing it, without downscaling it. ' +
+        'If you were given a scratchpad folder path, you must copy the original into that folder and share the copy with SendUserFile, without downscaling it; otherwise the user cannot see the image. ' +
         'If the user named a destination or the image is for the current project, copy it there and keep the original. ' +
         'Do not overwrite existing files; use a new name such as hero-v2.png instead.\n\n' +
         'Writing prompts: always write the prompt in English, translating the request if needed. Keep text that should appear in the image in its original language. ' +
