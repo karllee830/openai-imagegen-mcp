@@ -7,7 +7,7 @@ An [MCP](https://modelcontextprotocol.io) server that generates and edits images
 
 ## Models
 
-Each call can choose a model with the `model` option. No other model names are accepted.
+Each call can choose a model with the `model` option. No other model names are accepted. Results report the model that made the image.
 
 | Model | Best for |
 | --- | --- |
@@ -96,6 +96,7 @@ Complex images can take a couple of minutes, while some MCP clients give up on a
   "status": "completed",
   "job_id": "img_a1b2c3d4e5f6",
   "elapsed_seconds": 18,
+  "model": "gpt-image-2.6-flare",
   "images": [
     {
       "path": "/Users/me/.openai-imagegen-mcp/my-site/img_a1b2c3d4e5f6.png",

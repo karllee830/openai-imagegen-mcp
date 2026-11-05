@@ -28,6 +28,7 @@ interface OutputImage extends SavedImage {
 }
 
 interface JobOutput {
+  model: string;
   images: OutputImage[];
   next: string;
   usage?: Record<string, unknown>;
@@ -41,7 +42,8 @@ interface JobResult {
 
 const AFTER_IMAGE_SAVED =
   'Any attached image is a downscaled preview for you to inspect, and each path holds the full-size original. ' +
-  'When showing an image to the user, always use the original at its path, never the preview, and tell the user the full path. ' +
+  'When showing an image to the user, always use the original at its path, never the preview. ' +
+  'The model field names the model that made the image. ' +
   'Write no text before sharing the original: some clients collapse a preview only while tool calls run back to back. ' +
   'If the user named a destination or the image is for the current project, copy it there and keep the original. Do not overwrite existing files.';
 
@@ -88,6 +90,7 @@ const resultSchema = z.object({
   job_id: z.string().optional(),
   elapsed_seconds: z.number().optional(),
   next: z.string().optional(),
+  model: z.string().optional(),
   images: z
     .array(
       z.object({
@@ -164,10 +167,10 @@ export function createServer(config: Config): McpServer {
         'If a tool returns status "running", the image is still being made: ' +
         'call get_image_result with the job_id. Do not start the request again, because that would create and bill a new image.\n\n' +
         'Saving: always pass your current working directory as workspace, which groups images by project. Omit it if you do not know the directory. ' +
-        'When showing an image to the user, always use the original file at its path, never the preview, and tell the user the full path. ' +
+        'When showing an image to the user, always use the original file at its path, never the preview. ' +
+        'The model field in a result names the model that made the image, such as gpt-image-2.6-flare. ' +
         'Between the image tool call and sharing the original, write no text and only make tool calls, because some clients collapse a preview only while tool calls run back to back. Write your message after sharing. ' +
         'If your environment gives you a session scratchpad folder and your file-sharing tool only displays images from certain folders, copy the original there before sharing it, without downscaling it. ' +
-        'Still report the original path, because the scratchpad is temporary. ' +
         'If the user named a destination or the image is for the current project, copy it there and keep the original. ' +
         'Do not overwrite existing files; use a new name such as hero-v2.png instead.\n\n' +
         'Writing prompts: always write the prompt in English, translating the request if needed. Keep text that should appear in the image in its original language. ' +
@@ -220,6 +223,7 @@ export function createServer(config: Config): McpServer {
   }
 
   async function runJob(
+    model: string,
     workspace: string | undefined,
     produce: (signal: AbortSignal) => Promise<ImageResult>,
     ctx: ServerContext,
@@ -232,6 +236,7 @@ export function createServer(config: Config): McpServer {
       const previews = await createPreviews(result.images);
       return {
         output: {
+          model,
           images: saved.map((image, index) => {
             const preview = previews[index];
             return preview
@@ -287,7 +292,7 @@ export function createServer(config: Config): McpServer {
       handle(async () => {
         const request: GenerateRequest = { ...options, model: model ?? DEFAULT_IMAGE_MODEL };
         checkGenerateRequest(request, config.maxImagesPerRequest);
-        return runJob(workspace, (signal) => generateImages(client, request, signal), ctx);
+        return runJob(request.model, workspace, (signal) => generateImages(client, request, signal), ctx);
       }),
   );
 
@@ -327,7 +332,7 @@ export function createServer(config: Config): McpServer {
           ...(mask === undefined ? {} : { mask: await loadInputImage(mask, 'mask') }),
           ...(markup === undefined ? {} : { markup: await loadInputImage(markup, 'markup', PNG_ONLY) }),
         };
-        return runJob(workspace, (signal) => editImages(client, request, signal), ctx);
+        return runJob(request.model, workspace, (signal) => editImages(client, request, signal), ctx);
       }),
   );
 

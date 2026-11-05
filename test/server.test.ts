@@ -18,6 +18,7 @@ interface Output {
   job_id?: string;
   next?: string;
   images?: { path: string; uri: string; mime_type: string; bytes: number; preview?: { width: number; height: number; bytes: number } }[];
+  model?: string;
   usage?: Record<string, unknown>;
   error?: { message: string; code?: string; status?: number };
 }
@@ -120,6 +121,17 @@ describe('MCP server over stdio', () => {
       expect(prompt.description).toContain('Must be written in English');
     }
     expect(mcp.getInstructions()).toContain('always write the prompt in English');
+  });
+
+  it('reports the model that made the image', async () => {
+    const mcp = await connect();
+    const byDefault = await call(mcp, 'generate_image', { prompt: 'x' });
+    const chosen = await call(mcp, 'generate_image', { prompt: 'x', model: 'gpt-image-2.6-sunburst' });
+
+    expect(byDefault.output.model).toBe(DEFAULT_IMAGE_MODEL);
+    expect(chosen.output.model).toBe('gpt-image-2.6-sunburst');
+    expect(chosen.output.next).toContain('names the model that made the image');
+    expect(mcp.getInstructions()).toContain('names the model that made the image');
   });
 
   it('uses the chosen model', async () => {
