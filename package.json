@@ -1,0 +1,49 @@
+{
+  "name": "openai-imagegen-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for generating and editing images with the OpenAI Images API or a compatible endpoint",
+  "type": "module",
+  "bin": {
+    "openai-imagegen-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && vitest run",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
+    "openai": "^7.51.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  },
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "openai",
+    "gpt-image",
+    "image-generation"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/karllee830/openai-imagegen-mcp.git"
+  },
+  "homepage": "https://github.com/karllee830/openai-imagegen-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/karllee830/openai-imagegen-mcp/issues"
+  }
+}
