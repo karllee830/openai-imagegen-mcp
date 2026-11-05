@@ -238,6 +238,8 @@ describe('MCP server over stdio', () => {
     expect(result.content.find((block) => block.type === 'resource_link')).toMatchObject({ uri: output.images![0]!.uri });
     expect(mcp.getInstructions()).toContain('always use the original file');
     expect(mcp.getInstructions()).toContain('copy the original there before sharing it');
+    expect(mcp.getInstructions()).toContain('write no text and only make tool calls');
+    expect(output.next).toContain('Write no text before sharing the original');
   });
 
   it('previews the first frame of a gif', async () => {

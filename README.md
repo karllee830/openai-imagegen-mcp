@@ -2,6 +2,9 @@
 
 An [MCP](https://modelcontextprotocol.io) server that generates and edits images with GPT Image 2.6 through the OpenAI Images API or a compatible endpoint. Images are saved to local files, and tools return a downscaled preview plus the path of each original.
 
+> [!NOTE]
+> This server is built and tuned for the Claude desktop app. Other MCP clients can use it, but the experience may not be as polished: for example, a client may display the preview as well as the original, may not collapse the preview, or may only show a file path.
+
 ## Models
 
 Each call can choose a model with the `model` option. No other model names are accepted.
@@ -74,7 +77,7 @@ Images are saved as `<IMAGEGEN_HOME>/<workspace>/<job_id>.<ext>`, with a number 
 
 Each result also includes a downscaled JPEG preview for the model to look at. A call's previews stay within 75 KB in total, because clients limit tool results and rarely document how. Long edges go up to 1024 pixels when the size allows. If no preview fits, the result has the path only. A GIF preview shows the first frame.
 
-Previews are for the model only. The tool instructions require the model to show users the original file, and results mark the preview with the `assistant` audience and the link to the original with the `user` audience. How far this is honored depends on the client: some ignore audience annotations and may display the preview, and some cannot display local files at all. If a client only displays images from certain folders and gives the model a session scratchpad, the instructions ask the model to copy the original there before sharing it.
+Previews are for the model only. The tool instructions require the model to show users the original file, and results mark the preview with the `assistant` audience and the link to the original with the `user` audience. How far this is honored depends on the client: some ignore audience annotations and may display the preview, and some cannot display local files at all. If a client only displays images from certain folders and gives the model a session scratchpad, the instructions ask the model to copy the original there before sharing it. The instructions also ask the model to write no text until the original is shared, because some clients collapse a preview into a small thumbnail only while tool calls run back to back.
 
 ## Prompts
 
