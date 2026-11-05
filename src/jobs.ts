@@ -22,7 +22,7 @@ export class JobStore<T> {
 
   constructor(private readonly retentionMs = 60 * 60 * 1000) {}
 
-  start(task: (signal: AbortSignal) => Promise<T>): Job<T> {
+  start(task: (signal: AbortSignal, id: string) => Promise<T>): Job<T> {
     const controller = new AbortController();
     const id = `img_${randomBytes(6).toString('hex')}`;
 
@@ -31,7 +31,7 @@ export class JobStore<T> {
       startedAt: Date.now(),
       state: 'running',
       abort: () => controller.abort(),
-      settled: task(controller.signal).then(
+      settled: task(controller.signal, id).then(
         (result) => {
           job.result = result;
           job.state = 'completed';

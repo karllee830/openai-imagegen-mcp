@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { loadConfig } from '../src/config.js';
+import { detectWorkspace, loadConfig } from '../src/config.js';
 
 const KEY = { OPENAI_API_KEY: 'sk-test' };
 
@@ -14,7 +14,8 @@ describe('loadConfig', () => {
     expect(loadConfig(KEY)).toEqual({
       apiKey: 'sk-test',
       baseURL: undefined,
-      outputDir: join(homedir(), 'Pictures', 'imagegen'),
+      home: join(homedir(), '.openai-imagegen-mcp'),
+      defaultWorkspace: detectWorkspace({}, process.cwd()),
       waitMs: 50_000,
       requestTimeoutMs: 300_000,
       maxImagesPerRequest: 4,
@@ -37,13 +38,24 @@ describe('loadConfig', () => {
     expect(loadConfig({ ...KEY, OPENAI_BASE_URL: '  ' }).baseURL).toBeUndefined();
   });
 
-  it('expands a home-relative output directory', () => {
-    expect(loadConfig({ ...KEY, IMAGEGEN_OUTPUT_DIR: '~/images' }).outputDir).toBe(join(homedir(), 'images'));
+  it('expands a home-relative images folder', () => {
+    expect(loadConfig({ ...KEY, IMAGEGEN_HOME: '~/images' }).home).toBe(join(homedir(), 'images'));
+  });
+
+  it.each([
+    [{ CLAUDE_PROJECT_DIR: '/work/from-env' }, '/work/other', 'from-env'],
+    [{}, '/work/my-site', 'my-site'],
+    [{}, '/', 'default'],
+    [{}, homedir(), 'default'],
+  ])('detects the default workspace from %j and %s', (env, cwd, expected) => {
+    expect(detectWorkspace(env, cwd)).toBe(expected);
   });
 
   it.each([
     ['OPENAI_BASE_URL', 'not a url'],
     ['OPENAI_BASE_URL', 'ftp://relay.example'],
+    ['IMAGEGEN_HOME', 'relative/images'],
+    ['IMAGEGEN_HOME', './images'],
     ['IMAGEGEN_WAIT_SECONDS', '0'],
     ['IMAGEGEN_WAIT_SECONDS', 'soon'],
     ['IMAGEGEN_REQUEST_TIMEOUT_SECONDS', '-1'],

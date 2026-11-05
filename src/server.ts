@@ -1,5 +1,5 @@
-import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { McpServer, type ServerContext } from '@modelcontextprotocol/server';
 import type OpenAI from 'openai';
 import * as z from 'zod/v4';
@@ -15,18 +15,34 @@ import {
 } from './images.js';
 import { loadInputImage } from './inputs.js';
 import { JobStore, type Job } from './jobs.js';
-import { parseFilename, saveImages, type SavedImage } from './storage.js';
+import { createPreviews, PREVIEW_MIME_TYPE, type Preview } from './preview.js';
+import { saveImages, workspaceFolderName, type SavedImage } from './storage.js';
 import { checkEditRequest, checkGenerateRequest } from './validation.js';
 
 const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
 
 const PNG_ONLY = ['png'] as const;
 
+interface OutputImage extends SavedImage {
+  preview?: { width: number; height: number; bytes: number };
+}
+
 interface JobOutput {
-  images: SavedImage[];
+  images: OutputImage[];
+  next: string;
   usage?: Record<string, unknown>;
   revised_prompts?: string[];
 }
+
+interface JobResult {
+  output: JobOutput;
+  previews: Preview[];
+}
+
+const AFTER_IMAGE_SAVED =
+  'Any attached image is a downscaled preview for you to inspect, and each path holds the full-size original. ' +
+  'When showing an image to the user, always use the original at its path, never the preview, and tell the user the full path. ' +
+  'If the user named a destination or the image is for the current project, copy it there and keep the original. Do not overwrite existing files.';
 
 const commonInputs = {
   prompt: z
@@ -60,10 +76,10 @@ const commonInputs = {
     .describe('Transparent cannot be used with output_format jpeg.'),
   output_compression: z.number().int().min(0).max(100).optional().describe('Compression level for jpeg or webp output.'),
   moderation: z.enum(['auto', 'low']).optional(),
-  filename: z
+  workspace: z
     .string()
     .optional()
-    .describe('Base name for the saved file, without directories. Existing files are never overwritten.'),
+    .describe('Your current working directory. Only its last segment is used, to name the folder that groups saved images. Omit it if you do not know the directory; never guess.'),
 };
 
 const resultSchema = z.object({
@@ -78,6 +94,7 @@ const resultSchema = z.object({
         uri: z.string(),
         mime_type: z.string(),
         bytes: z.number(),
+        preview: z.object({ width: z.number(), height: z.number(), bytes: z.number() }).optional(),
       }),
     )
     .optional(),
@@ -97,45 +114,60 @@ const resultSchema = z.object({
 
 type ToolOutput = z.infer<typeof resultSchema>;
 
-function asToolResult(output: ToolOutput) {
+interface ToolReply {
+  output: ToolOutput;
+  previews?: Preview[];
+}
+
+// Previews stay out of structuredContent: base64 there would reach the model as text.
+function asToolResult({ output, previews = [] }: ToolReply) {
+  const images = previews.map((preview) => ({
+    type: 'image' as const,
+    data: preview.data.toString('base64'),
+    mimeType: PREVIEW_MIME_TYPE,
+    annotations: { audience: ['assistant' as const] },
+  }));
   const links = (output.images ?? []).map((image) => ({
     type: 'resource_link' as const,
     uri: image.uri,
     name: image.path,
     mimeType: image.mime_type,
     size: image.bytes,
+    annotations: { audience: ['user' as const] },
   }));
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify(output) }, ...links],
+    content: [{ type: 'text' as const, text: JSON.stringify(output) }, ...images, ...links],
     structuredContent: output,
     isError: output.status === 'failed',
   };
 }
 
-function failure(error: ToolError, job?: Job<JobOutput>): ToolOutput {
-  return { status: 'failed', ...(job ? describeTiming(job) : {}), error };
+function failure(error: ToolError, job?: Job<JobResult>): ToolReply {
+  return { output: { status: 'failed', ...(job ? describeTiming(job) : {}), error } };
 }
 
-function describeTiming(job: Job<JobOutput>): Pick<ToolOutput, 'job_id' | 'elapsed_seconds'> {
+function describeTiming(job: Job<JobResult>): Pick<ToolOutput, 'job_id' | 'elapsed_seconds'> {
   const elapsedMs = (job.finishedAt ?? Date.now()) - job.startedAt;
   return { job_id: job.id, elapsed_seconds: Math.round(elapsedMs / 1000) };
 }
 
-function defaultFileName(): string {
-  const timestamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
-  return `image-${timestamp}-${randomBytes(3).toString('hex')}`;
-}
-
 export function createServer(config: Config): McpServer {
   const client: OpenAI = createClient(config);
-  const jobs = new JobStore<JobOutput>();
+  const jobs = new JobStore<JobResult>();
 
   const server = new McpServer(
     { name: 'openai-imagegen-mcp', version },
     {
       instructions:
-        'Images are saved to local files and returned as paths. If a tool returns status "running", the image is still being made: ' +
+        'Images are saved to local files. A result carries a downscaled preview for you to inspect and the path of the full-size original. ' +
+        'If a tool returns status "running", the image is still being made: ' +
         'call get_image_result with the job_id. Do not start the request again, because that would create and bill a new image.\n\n' +
+        'Saving: always pass your current working directory as workspace, which groups images by project. Omit it if you do not know the directory. ' +
+        'When showing an image to the user, always use the original file at its path, never the preview, and tell the user the full path. ' +
+        'If your environment gives you a session scratchpad folder and your file-sharing tool only displays images from certain folders, copy the original there before sharing it, without downscaling it. ' +
+        'Still report the original path, because the scratchpad is temporary. ' +
+        'If the user named a destination or the image is for the current project, copy it there and keep the original. ' +
+        'Do not overwrite existing files; use a new name such as hero-v2.png instead.\n\n' +
         'Writing prompts: always write the prompt in English, translating the request if needed. Keep text that should appear in the image in its original language. ' +
         'State the subject and intended use, then composition, style, lighting and materials. ' +
         'For complex requests, use labeled sections for scene, subject, details and constraints. ' +
@@ -147,18 +179,22 @@ export function createServer(config: Config): McpServer {
     },
   );
 
-  function describeJob(job: Job<JobOutput>): ToolOutput {
+  function describeJob(job: Job<JobResult>): ToolReply {
     if (job.state === 'failed') return failure(toToolError(job.error, config.apiKey), job);
-    if (job.state === 'completed' && job.result) return { status: 'completed', ...describeTiming(job), ...job.result };
+    if (job.state === 'completed' && job.result) {
+      return { output: { status: 'completed', ...describeTiming(job), ...job.result.output }, previews: job.result.previews };
+    }
     return {
-      status: 'running',
-      ...describeTiming(job),
-      next: `Call get_image_result with job_id "${job.id}". Do not start the request again, because that would create and bill a new image.`,
+      output: {
+        status: 'running',
+        ...describeTiming(job),
+        next: `Call get_image_result with job_id "${job.id}". Do not start the request again, because that would create and bill a new image.`,
+      },
     };
   }
 
   // Progress keeps clients that track idle time from giving up during the wait.
-  async function waitWithProgress(job: Job<JobOutput>, ctx: ServerContext): Promise<void> {
+  async function waitWithProgress(job: Job<JobResult>, ctx: ServerContext): Promise<void> {
     const progressToken = ctx.mcpReq._meta?.progressToken;
     const reporter =
       progressToken === undefined
@@ -182,19 +218,29 @@ export function createServer(config: Config): McpServer {
   }
 
   async function runJob(
-    filename: string | undefined,
+    workspace: string | undefined,
     produce: (signal: AbortSignal) => Promise<ImageResult>,
     ctx: ServerContext,
-  ): Promise<ToolOutput> {
-    const chosenName = filename === undefined ? undefined : parseFilename(filename);
+  ): Promise<ToolReply> {
+    const folder = workspace === undefined ? config.defaultWorkspace : workspaceFolderName(workspace);
 
-    const job = jobs.start(async (signal) => {
+    const job = jobs.start(async (signal, id) => {
       const result = await produce(signal);
-      const images = await saveImages(result.images, config.outputDir, chosenName ?? defaultFileName());
+      const saved = await saveImages(result.images, join(config.home, folder), id);
+      const previews = await createPreviews(result.images);
       return {
-        images,
-        ...(result.usage ? { usage: result.usage } : {}),
-        ...(result.revisedPrompts.length > 0 ? { revised_prompts: result.revisedPrompts } : {}),
+        output: {
+          images: saved.map((image, index) => {
+            const preview = previews[index];
+            return preview
+              ? { ...image, preview: { width: preview.width, height: preview.height, bytes: preview.data.length } }
+              : image;
+          }),
+          next: AFTER_IMAGE_SAVED,
+          ...(result.usage ? { usage: result.usage } : {}),
+          ...(result.revisedPrompts.length > 0 ? { revised_prompts: result.revisedPrompts } : {}),
+        },
+        previews: previews.filter((preview) => preview !== undefined),
       };
     });
 
@@ -210,7 +256,7 @@ export function createServer(config: Config): McpServer {
     return describeJob(job);
   }
 
-  async function handle(action: () => Promise<ToolOutput>) {
+  async function handle(action: () => Promise<ToolReply>) {
     try {
       return asToolResult(await action());
     } catch (error) {
@@ -223,7 +269,7 @@ export function createServer(config: Config): McpServer {
     {
       title: 'Generate image',
       description:
-        'Generate images from a text prompt and save them to local files. Returns file paths. ' +
+        'Generate images from a text prompt and save them to local files. Returns downscaled previews and the paths of the originals. ' +
         'Supports raster output and animated GIF. If the result has status "running", call get_image_result with its job_id.',
       inputSchema: z.object({
         ...commonInputs,
@@ -235,11 +281,11 @@ export function createServer(config: Config): McpServer {
       outputSchema: resultSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    async ({ filename, model, ...options }, ctx) =>
+    async ({ workspace, model, ...options }, ctx) =>
       handle(async () => {
         const request: GenerateRequest = { ...options, model: model ?? DEFAULT_IMAGE_MODEL };
         checkGenerateRequest(request, config.maxImagesPerRequest);
-        return runJob(filename, (signal) => generateImages(client, request, signal), ctx);
+        return runJob(workspace, (signal) => generateImages(client, request, signal), ctx);
       }),
   );
 
@@ -248,7 +294,7 @@ export function createServer(config: Config): McpServer {
     {
       title: 'Edit image',
       description:
-        'Edit local images, or create a new image from local reference images, and save the result to local files. Returns file paths. ' +
+        'Edit local images, or create a new image from local reference images, and save the result to local files. Returns downscaled previews and the paths of the originals. ' +
         'The first image is the one edited; the others serve as references. ' +
         'If the result has status "running", call get_image_result with its job_id.',
       inputSchema: z.object({
@@ -268,7 +314,7 @@ export function createServer(config: Config): McpServer {
       outputSchema: resultSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    async ({ filename, model, images, mask, markup, ...options }, ctx) =>
+    async ({ workspace, model, images, mask, markup, ...options }, ctx) =>
       handle(async () => {
         const settings = { ...options, model: model ?? DEFAULT_IMAGE_MODEL };
         checkEditRequest({ ...settings, mask, markup }, config.maxImagesPerRequest);
@@ -279,7 +325,7 @@ export function createServer(config: Config): McpServer {
           ...(mask === undefined ? {} : { mask: await loadInputImage(mask, 'mask') }),
           ...(markup === undefined ? {} : { markup: await loadInputImage(markup, 'markup', PNG_ONLY) }),
         };
-        return runJob(filename, (signal) => editImages(client, request, signal), ctx);
+        return runJob(workspace, (signal) => editImages(client, request, signal), ctx);
       }),
   );
 

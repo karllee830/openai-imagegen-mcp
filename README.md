@@ -1,6 +1,6 @@
 # openai-imagegen-mcp
 
-An [MCP](https://modelcontextprotocol.io) server that generates and edits images with GPT Image 2.6 through the OpenAI Images API or a compatible endpoint. Images are saved to local files, and tools return their paths.
+An [MCP](https://modelcontextprotocol.io) server that generates and edits images with GPT Image 2.6 through the OpenAI Images API or a compatible endpoint. Images are saved to local files, and tools return a downscaled preview plus the path of each original.
 
 ## Models
 
@@ -47,7 +47,7 @@ The base URL and API key are configured here, not passed as tool arguments, so t
 | --- | --- | --- |
 | `OPENAI_API_KEY` | required | API key sent to the endpoint. |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | API root. `/v1` is added if the URL has no path. |
-| `IMAGEGEN_OUTPUT_DIR` | `~/Pictures/imagegen` | Where images are saved. |
+| `IMAGEGEN_HOME` | `~/.openai-imagegen-mcp` | Folder that holds saved images. Must be an absolute path or start with `~/`. |
 | `IMAGEGEN_WAIT_SECONDS` | `50` | How long one tool call waits before returning a job. Must be shorter than your client's tool timeout. |
 | `IMAGEGEN_REQUEST_TIMEOUT_SECONDS` | `300` | Timeout for each request to the API. |
 | `IMAGEGEN_MAX_N` | `4` | Most images allowed in one call, from 1 to 10. |
@@ -56,7 +56,7 @@ The base URL and API key are configured here, not passed as tool arguments, so t
 
 ### `generate_image`
 
-Creates images from a prompt. Options: `model`, `size`, `quality`, `complexity`, `background`, `output_format` (`png`, `jpeg`, `webp`, `gif`), `output_compression`, `n`, `frame_count`, `frame_duration_ms`, `moderation` and `filename`.
+Creates images from a prompt. Options: `model`, `size`, `quality`, `complexity`, `background`, `output_format` (`png`, `jpeg`, `webp`, `gif`), `output_compression`, `n`, `frame_count`, `frame_duration_ms`, `moderation` and `workspace`.
 
 ### `edit_image`
 
@@ -65,6 +65,16 @@ Edits local images or uses them as references. `images` takes up to 16 local PNG
 ### `get_image_result`
 
 Collects the result of a job by `job_id`.
+
+## Saved images and previews
+
+Images are saved as `<IMAGEGEN_HOME>/<workspace>/<job_id>.<ext>`, with a number added when one call returns several images. The calling model cannot choose the location or the file name. If an image belongs somewhere else, the model copies it there and keeps the original, as the tool instructions ask.
+
+`workspace` is the caller's current working directory, and only its last segment is used. An MCP server usually cannot see that directory itself. Without `workspace`, the server falls back to `CLAUDE_PROJECT_DIR`, then to its own working directory, then to a folder named `default`. Images are not cleaned up automatically.
+
+Each result also includes a downscaled JPEG preview for the model to look at. A call's previews stay within 75 KB in total, because clients limit tool results and rarely document how. Long edges go up to 1024 pixels when the size allows. If no preview fits, the result has the path only. A GIF preview shows the first frame.
+
+Previews are for the model only. The tool instructions require the model to show users the original file, and results mark the preview with the `assistant` audience and the link to the original with the `user` audience. How far this is honored depends on the client: some ignore audience annotations and may display the preview, and some cannot display local files at all. If a client only displays images from certain folders and gives the model a session scratchpad, the instructions ask the model to copy the original there before sharing it.
 
 ## Prompts
 
@@ -85,10 +95,11 @@ Complex images can take a couple of minutes, while some MCP clients give up on a
   "elapsed_seconds": 18,
   "images": [
     {
-      "path": "/Users/me/Pictures/imagegen/logo.png",
-      "uri": "file:///Users/me/Pictures/imagegen/logo.png",
+      "path": "/Users/me/.openai-imagegen-mcp/my-site/img_a1b2c3d4e5f6.png",
+      "uri": "file:///Users/me/.openai-imagegen-mcp/my-site/img_a1b2c3d4e5f6.png",
       "mime_type": "image/png",
-      "bytes": 1482133
+      "bytes": 1482133,
+      "preview": { "width": 768, "height": 768, "bytes": 61240 }
     }
   ],
   "usage": { "total_tokens": 1234 }
@@ -108,8 +119,8 @@ Some gateways drop fields they do not recognize without reporting an error, and 
 ## Local file safety
 
 - Input files are checked by content, and only real PNG, JPEG or WebP images up to 50 MB are uploaded.
-- `filename` must be a plain name, so files cannot be written outside the output directory.
-- Existing files are never overwritten. A numeric suffix is added instead.
+- `workspace` only names a folder, so files cannot be written outside `IMAGEGEN_HOME`.
+- Existing files are never overwritten.
 
 ## Development
 

@@ -3,9 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
+import sharp from 'sharp';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from '../src/config.js';
+import { MAX_PREVIEW_BYTES } from '../src/preview.js';
 import { FakeImagesApi, PNG_BYTES, sendImage, sendJson } from './helpers.js';
 
 const API_KEY = 'sk-test-secret-value';
@@ -15,7 +17,7 @@ interface Output {
   status: 'completed' | 'running' | 'failed';
   job_id?: string;
   next?: string;
-  images?: { path: string; uri: string; mime_type: string; bytes: number }[];
+  images?: { path: string; uri: string; mime_type: string; bytes: number; preview?: { width: number; height: number; bytes: number } }[];
   usage?: Record<string, unknown>;
   error?: { message: string; code?: string; status?: number };
 }
@@ -39,10 +41,11 @@ describe('MCP server over stdio', () => {
       new StdioClientTransport({
         command: process.execPath,
         args: [SERVER_ENTRY],
+        cwd: '/',
         env: {
           OPENAI_API_KEY: API_KEY,
           OPENAI_BASE_URL: `${baseUrl}/v1`,
-          IMAGEGEN_OUTPUT_DIR: outputDir,
+          IMAGEGEN_HOME: outputDir,
           IMAGEGEN_WAIT_SECONDS: '5',
           ...env,
         },
@@ -77,16 +80,16 @@ describe('MCP server over stdio', () => {
 
   it('generates an image, saves it and returns the path', async () => {
     const mcp = await connect();
-    const { result, output } = await call(mcp, 'generate_image', { prompt: 'a cat', complexity: 'low', filename: 'cat' });
+    const { result, output } = await call(mcp, 'generate_image', { prompt: 'a cat', complexity: 'low' });
 
     expect(result.isError).toBeFalsy();
     expect(output.status).toBe('completed');
     expect(output.usage).toEqual({ total_tokens: 42 });
     const image = output.images![0]!;
-    expect(image.path).toBe(join(outputDir, 'cat.png'));
+    expect(image.path).toBe(join(outputDir, 'default', `${output.job_id}.png`));
     expect(image.mime_type).toBe('image/png');
     expect(await readFile(image.path)).toEqual(PNG_BYTES);
-    expect(result.content.map((block) => block.type)).toEqual(['text', 'resource_link']);
+    expect(result.content.map((block) => block.type)).toEqual(['text', 'image', 'resource_link']);
 
     expect(api.requests).toHaveLength(1);
     const request = api.requests[0]!;
@@ -171,13 +174,91 @@ describe('MCP server over stdio', () => {
     expect(output.error?.message).toContain('OPENAI_BASE_URL');
   });
 
-  it('never overwrites an existing file', async () => {
+  it.each([
+    ['/Users/me/Github/my-site', 'my-site'],
+    ['/Users/me/my-site/', 'my-site'],
+    ['C:\\work\\my-site', 'my-site'],
+    ['my-site', 'my-site'],
+    ['../..', 'default'],
+    ['/', 'default'],
+    ['.hidden', 'hidden'],
+    ['项目 一', '项目 一'],
+  ])('saves into a folder named after workspace %s', async (workspace, folder) => {
     const mcp = await connect();
-    const first = await call(mcp, 'generate_image', { prompt: 'a', filename: 'same' });
-    const second = await call(mcp, 'generate_image', { prompt: 'b', filename: 'same' });
+    const { output } = await call(mcp, 'generate_image', { prompt: 'x', workspace });
+    expect(output.images![0]!.path).toBe(join(outputDir, folder, `${output.job_id}.png`));
+    expect(api.requests[0]!.json).not.toHaveProperty('workspace');
+  });
 
-    expect(first.output.images![0]!.path).toBe(join(outputDir, 'same.png'));
-    expect(second.output.images![0]!.path).toBe(join(outputDir, 'same-2.png'));
+  it('numbers several images from one call', async () => {
+    const mcp = await connect();
+    api.respond = (_request, response) =>
+      sendJson(response, 200, { data: [{ b64_json: PNG_BYTES.toString('base64') }, { b64_json: PNG_BYTES.toString('base64') }] });
+
+    const { result, output } = await call(mcp, 'generate_image', { prompt: 'x', n: 2 });
+    expect(output.images!.map((image) => image.path)).toEqual([
+      join(outputDir, 'default', `${output.job_id}-1.png`),
+      join(outputDir, 'default', `${output.job_id}-2.png`),
+    ]);
+    expect(result.content.filter((block) => block.type === 'image')).toHaveLength(2);
+  });
+
+  it('returns a preview within budget and keeps the original intact', async () => {
+    const mcp = await connect();
+    const original = await sharp({
+      create: { width: 2048, height: 2048, channels: 4, background: '#336699', noise: { type: 'gaussian', mean: 128, sigma: 40 } },
+    })
+      .png()
+      .toBuffer();
+    api.respond = (_request, response) => sendJson(response, 200, { data: [{ b64_json: original.toString('base64') }] });
+
+    const { result, output } = await call(mcp, 'generate_image', { prompt: 'x' });
+    const block = result.content.find((item) => item.type === 'image') as unknown as { data: string; mimeType: string };
+    const preview = Buffer.from(block.data, 'base64');
+
+    expect(block.mimeType).toBe('image/jpeg');
+    expect(preview.length).toBeLessThanOrEqual(MAX_PREVIEW_BYTES);
+    const metadata = await sharp(preview).metadata();
+    expect(Math.max(metadata.width, metadata.height)).toBeLessThan(2048);
+    expect(output.images![0]!.preview).toEqual({ width: metadata.width, height: metadata.height, bytes: preview.length });
+    expect(await readFile(output.images![0]!.path)).toEqual(original);
+    expect(JSON.stringify(result.structuredContent)).not.toContain(block.data.slice(0, 200));
+    expect(output.next).toContain('full-size original');
+    expect(output.next).toContain('never the preview');
+  });
+
+  it('marks the preview for the model and the original for the user', async () => {
+    const mcp = await connect();
+    const { result, output } = await call(mcp, 'generate_image', { prompt: 'x' });
+    const audience = (type: string) =>
+      (result.content.find((block) => block.type === type) as unknown as { annotations: { audience: string[] } }).annotations.audience;
+
+    expect(audience('image')).toEqual(['assistant']);
+    expect(audience('resource_link')).toEqual(['user']);
+    expect(result.content.find((block) => block.type === 'resource_link')).toMatchObject({ uri: output.images![0]!.uri });
+    expect(mcp.getInstructions()).toContain('always use the original file');
+    expect(mcp.getInstructions()).toContain('copy the original there before sharing it');
+  });
+
+  it('previews the first frame of a gif', async () => {
+    const mcp = await connect();
+    const gif = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#ff0000' } }).gif().toBuffer();
+    api.respond = (_request, response) => sendJson(response, 200, { data: [{ b64_json: gif.toString('base64') }] });
+
+    const { result, output } = await call(mcp, 'generate_image', { prompt: 'x', output_format: 'gif' });
+    expect(output.images![0]!.path.endsWith('.gif')).toBe(true);
+    expect(result.content.some((block) => block.type === 'image')).toBe(true);
+  });
+
+  it('still succeeds when no preview can be made', async () => {
+    const mcp = await connect();
+    const truncated = PNG_BYTES.subarray(0, 12);
+    api.respond = (_request, response) => sendJson(response, 200, { data: [{ b64_json: truncated.toString('base64') }] });
+
+    const { result, output } = await call(mcp, 'generate_image', { prompt: 'x' });
+    expect(output.status).toBe('completed');
+    expect(output.images![0]!.preview).toBeUndefined();
+    expect(result.content.some((block) => block.type === 'image')).toBe(false);
   });
 
   it('returns a job after the wait and delivers the result without a second generation', async () => {
@@ -335,7 +416,7 @@ describe('MCP server over stdio', () => {
 
     const { output } = await call(mcp, 'generate_image', { prompt: 'x' });
     expect(output.status).toBe('failed');
-    await expect(readdir(outputDir)).resolves.toEqual([]);
+    await expect(readdir(outputDir)).rejects.toThrow('ENOENT');
   });
 
   it.each([
@@ -343,8 +424,6 @@ describe('MCP server over stdio', () => {
     ['frames without gif', { frame_count: 4 }],
     ['transparent jpeg', { background: 'transparent', output_format: 'jpeg' }],
     ['more images than the limit', { n: 5 }],
-    ['a path in filename', { filename: '../escape' }],
-    ['a hidden filename', { filename: '.bashrc' }],
   ])('rejects %s before calling the API', async (_label, args) => {
     const mcp = await connect();
     const { result, output } = await call(mcp, 'generate_image', { prompt: 'x', ...args });

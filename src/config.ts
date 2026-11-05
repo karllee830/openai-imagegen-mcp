@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, isAbsolute, join, resolve } from 'node:path';
+import { FALLBACK_WORKSPACE, workspaceFolderName } from './storage.js';
 
 // The models this server offers. Moving to a new GPT Image generation means
 // replacing these and removing whatever only the old one needed.
@@ -9,7 +10,8 @@ export const DEFAULT_IMAGE_MODEL = IMAGE_MODELS[0];
 export interface Config {
   apiKey: string;
   baseURL: string | undefined;
-  outputDir: string;
+  home: string;
+  defaultWorkspace: string;
   waitMs: number;
   requestTimeoutMs: number;
   maxImagesPerRequest: number;
@@ -51,6 +53,25 @@ function parseBaseURL(raw: string | undefined): string | undefined {
   return url.pathname === '/' ? `${trimmed}/v1` : trimmed;
 }
 
+function parseHome(raw: string | undefined): string {
+  const value = raw?.trim();
+  if (!value) return join(homedir(), '.openai-imagegen-mcp');
+  // Clients start servers in unpredictable directories, often the filesystem root.
+  if (!isAbsolute(value) && value !== '~' && !value.startsWith('~/')) {
+    throw new Error(`IMAGEGEN_HOME must be an absolute path or start with ~/, got "${value}"`);
+  }
+  return expandPath(value);
+}
+
+/** Names the folder for calls that do not say which directory they work in. */
+export function detectWorkspace(env: NodeJS.ProcessEnv, cwd: string): string {
+  const projectDir = env['CLAUDE_PROJECT_DIR']?.trim();
+  if (projectDir) return workspaceFolderName(projectDir);
+  // The root and the home directory say nothing about the project.
+  if (basename(cwd) === '' || resolve(cwd) === homedir()) return FALLBACK_WORKSPACE;
+  return workspaceFolderName(cwd);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const apiKey = env['OPENAI_API_KEY']?.trim();
   if (!apiKey) throw new Error('OPENAI_API_KEY is required');
@@ -63,7 +84,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     apiKey,
     baseURL: parseBaseURL(env['OPENAI_BASE_URL']),
-    outputDir: expandPath(env['IMAGEGEN_OUTPUT_DIR']?.trim() || join(homedir(), 'Pictures', 'imagegen')),
+    home: parseHome(env['IMAGEGEN_HOME']),
+    defaultWorkspace: detectWorkspace(env, process.cwd()),
     waitMs: positiveNumber(env, 'IMAGEGEN_WAIT_SECONDS', 50) * 1000,
     requestTimeoutMs: positiveNumber(env, 'IMAGEGEN_REQUEST_TIMEOUT_SECONDS', 300) * 1000,
     maxImagesPerRequest: maxImages,

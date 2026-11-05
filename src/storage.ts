@@ -1,8 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { InvalidRequestError } from './errors.js';
-import { detectImageFormat, FILE_EXTENSIONS, MIME_TYPES } from './formats.js';
+import { detectImageFormat, FILE_EXTENSIONS, MIME_TYPES, type ImageFormat } from './formats.js';
 
 export interface SavedImage {
   path: string;
@@ -11,18 +10,22 @@ export interface SavedImage {
   bytes: number;
 }
 
-const SAFE_FILENAME = /^[\p{L}\p{N}][\p{L}\p{N} ._-]*$/u;
-const KNOWN_EXTENSION = /\.(png|jpe?g|webp|gif)$/i;
-const MAX_FILENAME_LENGTH = 120;
+export const FALLBACK_WORKSPACE = 'default';
 
-/** Accepts a bare file name only, so a save can never leave the output directory. */
-export function parseFilename(filename: string): string {
-  if (filename.length > MAX_FILENAME_LENGTH || !SAFE_FILENAME.test(filename)) {
-    throw new InvalidRequestError(
-      `filename must be a plain name of at most ${MAX_FILENAME_LENGTH} characters, with no path separators`,
-    );
-  }
-  return filename.replace(KNOWN_EXTENSION, '');
+const MAX_FOLDER_NAME_LENGTH = 120;
+
+/**
+ * Turns a working directory path or name into one folder name. Only the last
+ * segment is kept, so the value can never move a save out of the images folder.
+ */
+export function workspaceFolderName(workspace: string | undefined): string {
+  const lastSegment = workspace?.split(/[/\\]/).filter(Boolean).at(-1) ?? '';
+  const safe = lastSegment
+    .replace(/[^\p{L}\p{N} ._-]/gu, '-')
+    .replace(/^[ .-]+/, '')
+    .slice(0, MAX_FOLDER_NAME_LENGTH)
+    .trimEnd();
+  return safe || FALLBACK_WORKSPACE;
 }
 
 async function writeWithoutOverwriting(dir: string, name: string, extension: string, data: Buffer): Promise<string> {
@@ -38,13 +41,16 @@ async function writeWithoutOverwriting(dir: string, name: string, extension: str
 }
 
 export async function saveImages(images: Buffer[], dir: string, name: string): Promise<SavedImage[]> {
+  const formats = images.map((data) => {
+    const format = detectImageFormat(data);
+    if (!format) throw new Error('The API returned data that is not a recognized image format');
+    return format;
+  });
   await mkdir(dir, { recursive: true });
 
   const saved: SavedImage[] = [];
   for (const [index, data] of images.entries()) {
-    const format = detectImageFormat(data);
-    if (!format) throw new Error('The API returned data that is not a recognized image format');
-
+    const format = formats[index] as ImageFormat;
     const imageName = images.length > 1 ? `${name}-${index + 1}` : name;
     const path = await writeWithoutOverwriting(dir, imageName, FILE_EXTENSIONS[format], data);
     saved.push({

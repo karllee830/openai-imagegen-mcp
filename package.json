@@ -1,7 +1,7 @@
 {
   "name": "openai-imagegen-mcp",
-  "version": "0.1.0",
-  "description": "MCP server for generating and editing images with the OpenAI Images API or a compatible endpoint",
+  "version": "0.2.0",
+  "description": "MCP server for generating and editing images with GPT Image 2.6 through the OpenAI Images API or a compatible endpoint",
   "type": "module",
   "bin": {
     "openai-imagegen-mcp": "dist/index.js"
@@ -22,6 +22,7 @@
   "dependencies": {
     "@modelcontextprotocol/server": "^2.4.0",
     "openai": "^7.51.0",
+    "sharp": "^0.35.5",
     "zod": "^4.6.7"
   },
   "devDependencies": {
